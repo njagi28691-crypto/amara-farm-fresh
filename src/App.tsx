@@ -29,7 +29,11 @@ import {
   ShoppingBag,
   Check,
   Search,
-  AlertCircle
+  AlertCircle,
+  MessageSquare,
+  Edit3,
+  Calendar,
+  CreditCard as PaymentIcon
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Toaster, toast } from "sonner";
@@ -47,13 +51,8 @@ import {
   TableHeader, 
   TableRow 
 } from "@/components/ui/table";
-import { 
-  Tabs, 
-  TabsContent, 
-  TabsList, 
-  TabsTrigger 
-} from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
+import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 
 // --- Types ---
 interface Product {
@@ -91,6 +90,7 @@ interface Order {
   customerName: string;
   customerPhone: string;
   location: string;
+  customerPreference: string;
   items: { name: string; quantity: number; price: number }[];
   total: number;
   status: 'pending' | 'completed' | 'delivered';
@@ -207,6 +207,7 @@ const INITIAL_ORDERS: Order[] = [
     customerName: "Alice Wanjiku",
     customerPhone: "0712345678",
     location: "Nairobi, Kilimani",
+    customerPreference: "No extra salt, well done",
     items: [{ name: "Full Kienyeji Chicken", quantity: 2, price: 1500 }],
     total: 3000,
     status: 'pending',
@@ -217,6 +218,7 @@ const INITIAL_ORDERS: Order[] = [
     customerName: "Peter Maina",
     customerPhone: "0722112233",
     location: "Thika Road, Roysambu",
+    customerPreference: "Cut the fish into pieces",
     items: [{ name: "Whole Tilapia Fish", quantity: 3, price: 850 }],
     total: 2550,
     status: 'completed',
@@ -227,6 +229,7 @@ const INITIAL_ORDERS: Order[] = [
     customerName: "Mary Juma",
     customerPhone: "0799887766",
     location: "Kiambu Town",
+    customerPreference: "Pack gizzards and liver separately",
     items: [
       { name: "Chicken Gizzards", quantity: 1, price: 450 },
       { name: "Chicken Liver", quantity: 1, price: 400 }
@@ -301,10 +304,12 @@ function App() {
   // Navigation State
   const [view, setView] = useState<'store' | 'admin-login' | 'admin-dashboard'>('store');
   const [activeTab, setActiveTab] = useState<'products' | 'shops'>('products');
+  const [adminActiveTab, setAdminActiveTab] = useState<'inventory' | 'orders'>('inventory');
   
   // Data State
   const [products, setProducts] = useState<Product[]>(INITIAL_PRODUCTS);
   const [orders, setOrders] = useState<Order[]>(INITIAL_ORDERS);
+  const [isLoading, setIsLoading] = useState(false);
   
   // Cart State
   const [cart, setCart] = useState<CartItem[]>([]);
@@ -314,6 +319,12 @@ function App() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   
+  // Customer Details State
+  const [customerName, setCustomerName] = useState("");
+  const [customerPhone, setCustomerPhone] = useState("");
+  const [customerLocation, setCustomerLocation] = useState("");
+  const [customerPreference, setCustomerPreference] = useState("");
+
   // M-Pesa State
   const [mpesaNumber, setMpesaNumber] = useState("");
   const [mpesaPin, setMpesaPin] = useState("");
@@ -327,8 +338,36 @@ function App() {
   const [loginUsername, setLoginUsername] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
 
+  // Admin Price Edit State
+  const [editingPriceId, setEditingPriceId] = useState<string | null>(null);
+  const [newPrice, setNewPrice] = useState<string>("");
+
   const cartCount = useMemo(() => cart.reduce((sum, item) => sum + item.quantity, 0), [cart]);
   const cartTotal = useMemo(() => cart.reduce((sum, item) => sum + (item.price * item.quantity), 0), [cart]);
+
+  // --- Supabase Integration ---
+  useEffect(() => {
+    const fetchData = async () => {
+      if (!isSupabaseEnabled() || !supabase) return;
+      setIsLoading(true);
+      try {
+        const { data: productsData } = await supabase.from('products').select('*');
+        if (productsData && productsData.length > 0) {
+          setProducts(productsData);
+        }
+        
+        const { data: ordersData } = await supabase.from('orders').select('*').order('createdAt', { ascending: false });
+        if (ordersData && ordersData.length > 0) {
+          setOrders(ordersData);
+        }
+      } catch (error) {
+        console.error("Error fetching data:", error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    fetchData();
+  }, []);
 
   // --- Handlers ---
 
@@ -364,75 +403,92 @@ function App() {
     }));
   };
 
-  const handleMpesaPrompt = () => {
-    if (!mpesaNumber || mpesaNumber.length < 10) {
-      toast.error("Please enter a valid M-Pesa number");
-      return;
+  const validateCheckoutFields = () => {
+    if (!customerName.trim()) {
+      toast.error("Please enter your name");
+      return false;
     }
-    if (!mpesaPin || mpesaPin.length < 4) {
-      toast.error("Please enter your M-Pesa PIN");
-      return;
+    if (!customerPhone.trim() || customerPhone.length < 10) {
+      toast.error("Please enter a valid phone number");
+      return false;
     }
+    if (!customerLocation.trim()) {
+      toast.error("Please enter your delivery location");
+      return false;
+    }
+    if (paymentMethod === 'mpesa') {
+      if (!mpesaNumber || mpesaNumber.length < 10) {
+        toast.error("Please enter a valid M-Pesa number");
+        return false;
+      }
+      if (!mpesaPin || mpesaPin.length < 4) {
+        toast.error("Please enter your M-Pesa PIN");
+        return false;
+      }
+    }
+    return true;
+  };
+
+  const handleCheckout = async () => {
+    if (!validateCheckoutFields()) return;
 
     setIsProcessing(true);
-    toast.info("Sending M-Pesa Prompt...", {
-      description: `Sending request to ${mpesaNumber}...`,
-      duration: 3000
-    });
 
-    setTimeout(() => {
-      setIsProcessing(false);
+    if (paymentMethod === 'mpesa') {
+      toast.info("Sending M-Pesa Prompt...", {
+        description: `Sending request to ${mpesaNumber}...`,
+        duration: 3000
+      });
+    }
+
+    setTimeout(async () => {
       const newOrder: Order = {
         id: `ORD-${Math.floor(100 + Math.random() * 900)}`,
-        customerName: "Recent Customer",
-        customerPhone: mpesaNumber,
-        location: "Delivery Address (Pending)",
+        customerName,
+        customerPhone,
+        location: customerLocation,
+        customerPreference: customerPreference || "No special instructions",
         items: cart.map(item => ({ name: item.name, quantity: item.quantity, price: item.price })),
         total: cartTotal,
         status: 'pending',
         createdAt: new Date().toISOString()
       };
-      setOrders(prev => [newOrder, ...prev]);
-      
-      toast.success("Payment Successful!", {
-        description: `KSh ${cartTotal.toLocaleString()} sent to 0799288420. Your order is being prepared!`,
-        duration: 5000
-      });
-      setCart([]);
-      setIsCheckoutOpen(false);
-      setIsCartOpen(false);
-      setMpesaNumber("");
-      setMpesaPin("");
-    }, 4000);
-  };
 
-  const handleCheckout = () => {
-    if (paymentMethod === 'mpesa') {
-      handleMpesaPrompt();
-    } else {
-      setIsProcessing(true);
-      setTimeout(() => {
-        setIsProcessing(false);
-        const newOrder: Order = {
-          id: `ORD-${Math.floor(100 + Math.random() * 900)}`,
-          customerName: "Recent Customer",
-          customerPhone: "Manual Order",
-          location: "In-Store Pickup / Cash Delivery",
-          items: cart.map(item => ({ name: item.name, quantity: item.quantity, price: item.price })),
-          total: cartTotal,
-          status: 'pending',
-          createdAt: new Date().toISOString()
-        };
-        setOrders(prev => [newOrder, ...prev]);
-        
+      // Persist to Supabase if enabled
+      if (isSupabaseEnabled() && supabase) {
+        try {
+          await supabase.from('orders').insert([newOrder]);
+        } catch (error) {
+          console.error("Supabase Error:", error);
+        }
+      }
+
+      setOrders(prev => [newOrder, ...prev]);
+      setIsProcessing(false);
+      
+      if (paymentMethod === 'mpesa') {
+        toast.success("Payment Successful!", {
+          description: `KSh ${cartTotal.toLocaleString()} sent to 0799288420. Your order is being prepared!`,
+          duration: 5000
+        });
+      } else {
         toast.success("Order Placed Successfully!", {
           description: "Thank you for shopping with Amara Farms.",
         });
-        setCart([]);
-        setIsCheckoutOpen(false);
-        setIsCartOpen(false);
-      }, 2000);
-    }
+      }
+      
+      // Reset form and cart
+      setCart([]);
+      setIsCheckoutOpen(false);
+      setIsCartOpen(false);
+      setCustomerName("");
+      setCustomerPhone("");
+      setCustomerLocation("");
+      setCustomerPreference("");
+      setMpesaNumber("");
+      setMpesaPin("");
+      setPaymentMethod(null);
+    }, paymentMethod === 'mpesa' ? 4000 : 2000);
   };
 
   const handleAdminLogin = (e: React.FormEvent) => {
@@ -447,17 +503,65 @@ function App() {
     }
   };
 
-  const toggleStock = (productId: string) => {
-    setProducts(prev => prev.map(p => 
-      p.id === productId ? { ...p, inStock: !p.inStock } : p
-    ));
+  const toggleStock = async (productId: string) => {
     const product = products.find(p => p.id === productId);
-    toast.info(`Updated ${product?.name} status`, {
-      description: `Item is now ${!product?.inStock ? 'In Stock' : 'Out of Stock'}`
+    if (!product) return;
+    
+    const newInStock = !product.inStock;
+
+    // Persist to Supabase
+    if (isSupabaseEnabled() && supabase) {
+      try {
+        await supabase.from('products').update({ inStock: newInStock }).eq('id', productId);
+      } catch (error) {
+        console.error("Supabase Error:", error);
+      }
+    }
+
+    setProducts(prev => prev.map(p => 
+      p.id === productId ? { ...p, inStock: newInStock } : p
+    ));
+    
+    toast.info(`Updated ${product.name} status`, {
+      description: `Item is now ${newInStock ? 'In Stock' : 'Out of Stock'}`
     });
   };
 
-  const updateOrderStatus = (orderId: string, status: Order['status']) => {
+  const handlePriceUpdate = async (productId: string) => {
+    const priceValue = parseFloat(newPrice);
+    if (isNaN(priceValue) || priceValue <= 0) {
+      toast.error("Please enter a valid price");
+      return;
+    }
+
+    // Persist to Supabase
+    if (isSupabaseEnabled() && supabase) {
+      try {
+        await supabase.from('products').update({ price: priceValue }).eq('id', productId);
+      } catch (error) {
+        console.error("Supabase Error:", error);
+      }
+    }
+
+    setProducts(prev => prev.map(p => 
+      p.id === productId ? { ...p, price: priceValue } : p
+    ));
+    
+    setEditingPriceId(null);
+    setNewPrice("");
+    toast.success("Price updated successfully!");
+  };
+
+  const updateOrderStatus = async (orderId: string, status: Order['status']) => {
+    // Persist to Supabase
+    if (isSupabaseEnabled() && supabase) {
+      try {
+        await supabase.from('orders').update({ status }).eq('id', orderId);
+      } catch (error) {
+        console.error("Supabase Error:", error);
+      }
+    }
+
     setOrders(prev => prev.map(o => 
       o.id === orderId ? { ...o, status } : o
     ));
@@ -475,8 +579,8 @@ function App() {
               <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-800 shadow-lg shadow-emerald-200">
                 <ShoppingBasket className="h-6 w-6 text-amber-400" />
               </div>
-              <span className="text-xl font-bold tracking-tight text-neutral-900">
-                AMARA<span className="text-emerald-800 font-extrabold">FARMS</span>
+              <span className="text-xl font-bold tracking-tight text-neutral-900 uppercase">
+                Amara<span className="text-emerald-800 font-extrabold">Farms</span>
               </span>
             </div>
 
@@ -531,7 +635,7 @@ function App() {
         </div>
         <AnimatePresence>
           {isMenuOpen && (
-            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="md:hidden border-t border-neutral-100 bg-white">
+            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="md:hidden border-t border-neutral-100 bg-white shadow-lg overflow-hidden">
               <div className="flex flex-col p-4 space-y-4">
                 <button onClick={() => { setActiveTab('products'); setIsMenuOpen(false); }} className="flex items-center justify-between text-left font-semibold text-neutral-700">Products<ChevronRight className="h-4 w-4" /></button>
                 <button onClick={() => { setActiveTab('shops'); setIsMenuOpen(false); }} className="flex items-center justify-between text-left font-semibold text-neutral-700">Shops Near Me<ChevronRight className="h-4 w-4" /></button>
@@ -649,8 +753,8 @@ function App() {
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="grid gap-12 lg:grid-cols-4 pb-16 border-b border-neutral-800">
             <div className="lg:col-span-1">
-              <div className="flex items-center gap-2 mb-6"><div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-800"><ShoppingBasket className="h-6 w-6 text-amber-400" /></div><span className="text-2xl font-bold tracking-tight">AMARA<span className="text-emerald-500">FARMS</span></span></div>
-              <p className="text-neutral-400 mb-6 leading-relaxed">Pioneering sustainable poultry and fish farming in Kenya. Delivering freshness from our gates to your plate since 2018.</p>
+              <div className="flex items-center gap-2 mb-6"><div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-800"><ShoppingBasket className="h-6 w-6 text-amber-400" /></div><span className="text-2xl font-bold tracking-tight uppercase">Amara<span className="text-emerald-500">Farms</span></span></div>
+              <p className="text-neutral-400 mb-6 leading-relaxed">Pioneering sustainable poultry and fish farming in Kenya. Delivering freshness from our gates to your plate since 2018.</p>\
               <div className="flex gap-4">
                 <a href="#" className="h-10 w-10 flex items-center justify-center rounded-full bg-neutral-800 hover:bg-emerald-800 transition-colors text-white"><Instagram className="h-5 w-5" /></a>
                 <a href="#" className="h-10 w-10 flex items-center justify-center rounded-full bg-neutral-800 hover:bg-emerald-800 transition-colors text-white"><Facebook className="h-5 w-5" /></a>
@@ -702,7 +806,7 @@ function App() {
                   <div className="space-y-6">
                     {cart.map((item) => (
                       <div key={item.id} className="flex gap-4 border-b border-neutral-100 pb-6">
-                        <img src={item.image} className="h-20 w-20 rounded-xl object-cover" alt={item.name} />
+                        <img src={item.image} className="h-20 w-20 rounded-xl object-cover shadow-sm" alt={item.name} />
                         <div className="flex flex-1 flex-col"><div className="flex justify-between"><h4 className="font-bold text-neutral-900">{item.name}</h4><button onClick={() => removeFromCart(item.id)} className="text-neutral-400 hover:text-red-500"><Trash2 className="h-4 w-4" /></button></div><p className="text-sm font-bold text-emerald-800">KSH {item.price.toLocaleString()}</p><div className="mt-3 flex items-center justify-between"><div className="flex items-center gap-3 rounded-lg border border-neutral-200 p-1"><button onClick={() => updateQuantity(item.id, -1)} className="p-1"><Minus className="h-3.5 w-3.5" /></button><span className="w-4 text-center text-sm font-bold">{item.quantity}</span><button onClick={() => updateQuantity(item.id, 1)} className="p-1"><Plus className="h-3.5 w-3.5" /></button></div><p className="text-sm font-black text-neutral-900">KSH {(item.price * item.quantity).toLocaleString()}</p></div></div>
                       </div>
                     ))}
@@ -725,24 +829,82 @@ function App() {
         {isCheckoutOpen && (
           <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => !isProcessing && setIsCheckoutOpen(false)} className="absolute inset-0 bg-neutral-900/60 backdrop-blur-md" />
-            <motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95, y: 20 }} className="relative w-full max-w-xl overflow-hidden rounded-3xl bg-white shadow-2xl">
-              <div className="border-b border-neutral-100 p-6 text-center bg-emerald-800 text-white"><h2 className="text-2xl font-extrabold">Secure Checkout</h2><p className="mt-1 text-emerald-100">Complete your order with Amara Farms</p></div>
+            <motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95, y: 20 }} className="relative w-full max-w-xl overflow-hidden rounded-3xl bg-white shadow-2xl max-h-[90vh] overflow-y-auto">
+              <div className="border-b border-neutral-100 p-6 text-center bg-emerald-800 text-white">
+                <h2 className="text-2xl font-extrabold">Secure Checkout</h2>
+                <p className="mt-1 text-emerald-100">Please provide your delivery details below</p>
+              </div>
               <div className="p-8">
-                <h3 className="mb-4 text-sm font-bold uppercase tracking-widest text-neutral-500">Select Payment Method</h3>
-                <div className="grid gap-4 grid-cols-3 mb-8">
-                  <button onClick={() => setPaymentMethod('mpesa')} className={`flex flex-col items-center gap-3 rounded-2xl border-2 p-4 ${paymentMethod === 'mpesa' ? 'border-emerald-800 bg-emerald-50 text-emerald-800' : 'border-neutral-100 bg-neutral-50'}`}><Smartphone className="h-8 w-8" /><span className="font-bold">M-Pesa</span></button>
-                  <button onClick={() => setPaymentMethod('card')} className={`flex flex-col items-center gap-3 rounded-2xl border-2 p-4 ${paymentMethod === 'card' ? 'border-emerald-800 bg-emerald-50 text-emerald-800' : 'border-neutral-100 bg-neutral-50'}`}><CreditCard className="h-8 w-8" /><span className="font-bold">Card</span></button>
-                  <button onClick={() => setPaymentMethod('cash')} className={`flex flex-col items-center gap-3 rounded-2xl border-2 p-4 ${paymentMethod === 'cash' ? 'border-emerald-800 bg-emerald-50 text-emerald-800' : 'border-neutral-100 bg-neutral-50'}`}><Banknote className="h-8 w-8" /><span className="font-bold">Cash</span></button>
-                </div>
-                {paymentMethod === 'mpesa' && (
-                  <div className="space-y-4 mb-8 bg-neutral-50 p-6 rounded-2xl border border-emerald-100">
-                    <div className="space-y-2"><Label className="font-bold text-neutral-700">M-Pesa Phone Number</Label><Input type="tel" placeholder="e.g. 0712345678" value={mpesaNumber} onChange={(e) => setMpesaNumber(e.target.value)} /></div>
-                    <div className="space-y-2"><Label className="font-bold text-neutral-700">M-Pesa PIN (Simulated)</Label><Input type="password" maxLength={4} placeholder="****" value={mpesaPin} onChange={(e) => setMpesaPin(e.target.value)} /><p className="text-[10px] text-neutral-400 italic">Money will be sent to 0799288420.</p></div>
+                <div className="space-y-6 mb-8">
+                  <div className="bg-neutral-50 p-6 rounded-2xl border border-neutral-100 space-y-4">
+                    <h3 className="text-sm font-bold uppercase tracking-widest text-emerald-800 flex items-center gap-2">
+                      <User className="h-4 w-4" /> Customer Information
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label className="text-xs font-bold text-neutral-500 uppercase">Full Name</Label>
+                        <Input 
+                          placeholder="e.g. John Doe" 
+                          value={customerName} 
+                          onChange={(e) => setCustomerName(e.target.value)} 
+                          className="bg-white"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label className="text-xs font-bold text-neutral-500 uppercase">Phone Number</Label>
+                        <Input 
+                          type="tel" 
+                          placeholder="e.g. 0712345678" 
+                          value={customerPhone} 
+                          onChange={(e) => setCustomerPhone(e.target.value)} 
+                          className="bg-white"
+                        />
+                      </div>
+                    </div>
                   </div>
+
+                  <div className="bg-neutral-50 p-6 rounded-2xl border border-neutral-100 space-y-4">
+                    <h3 className="text-sm font-bold uppercase tracking-widest text-emerald-800 flex items-center gap-2">
+                      <MapPin className="h-4 w-4" /> Delivery Details
+                    </h3>
+                    <div className="space-y-2">
+                      <Label className="text-xs font-bold text-neutral-500 uppercase">Exact Location / Apartment / House No.</Label>
+                      <Input 
+                        placeholder="e.g. Apt 4B, Silver Oak, Kilimani" 
+                        value={customerLocation} 
+                        onChange={(e) => setCustomerLocation(e.target.value)} 
+                        className="bg-white"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-xs font-bold text-neutral-500 uppercase">Order Preference (Spiciness, Cut size, etc.)</Label>
+                      <Textarea 
+                        placeholder="e.g. Cut chicken into small pieces, no gizzards..." 
+                        value={customerPreference} 
+                        onChange={(e) => setCustomerPreference(e.target.value)} 
+                        className="bg-white min-h-[80px]"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <h3 className="mb-4 text-xs font-bold uppercase tracking-widest text-neutral-500">Select Payment Method</h3>
+                <div className="grid gap-4 grid-cols-3 mb-8">
+                  <button onClick={() => setPaymentMethod('mpesa')} className={`flex flex-col items-center gap-3 rounded-2xl border-2 p-4 transition-all ${paymentMethod === 'mpesa' ? 'border-emerald-800 bg-emerald-50 text-emerald-800' : 'border-neutral-100 bg-neutral-50 text-neutral-400 hover:border-emerald-200'}`}><Smartphone className="h-8 w-8" /><span className="text-xs font-bold">M-Pesa</span></button>
+                  <button onClick={() => setPaymentMethod('card')} className={`flex flex-col items-center gap-3 rounded-2xl border-2 p-4 transition-all ${paymentMethod === 'card' ? 'border-emerald-800 bg-emerald-50 text-emerald-800' : 'border-neutral-100 bg-neutral-50 text-neutral-400 hover:border-emerald-200'}`}><CreditCard className="h-8 w-8" /><span className="text-xs font-bold">Card</span></button>
+                  <button onClick={() => setPaymentMethod('cash')} className={`flex flex-col items-center gap-3 rounded-2xl border-2 p-4 transition-all ${paymentMethod === 'cash' ? 'border-emerald-800 bg-emerald-50 text-emerald-800' : 'border-neutral-100 bg-neutral-50 text-neutral-400 hover:border-emerald-200'}`}><Banknote className="h-8 w-8" /><span className="text-xs font-bold">Cash</span></button>
+                </div>
+                
+                {paymentMethod === 'mpesa' && (
+                  <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4 mb-8 bg-neutral-50 p-6 rounded-2xl border border-emerald-100">
+                    <div className="space-y-2"><Label className="font-bold text-neutral-700">M-Pesa Number for STK Push</Label><Input type="tel" placeholder="e.g. 0712345678" value={mpesaNumber} onChange={(e) => setMpesaNumber(e.target.value)} /></div>
+                    <div className="space-y-2"><Label className="font-bold text-neutral-700">M-Pesa PIN (Simulated)</Label><Input type="password" maxLength={4} placeholder="****" value={mpesaPin} onChange={(e) => setMpesaPin(e.target.value)} /><p className="text-[10px] text-neutral-400 italic">Money will be sent to 0799288420.</p></div>
+                  </motion.div>
                 )}
+
                 <div className="rounded-2xl bg-neutral-900 p-6 text-white flex justify-between items-center"><span className="text-lg font-bold">Total Amount</span><span className="text-3xl font-black text-amber-400">KSH {cartTotal.toLocaleString()}</span></div>
                 <div className="mt-8 flex gap-4">
-                  <button disabled={isProcessing} onClick={() => setIsCheckoutOpen(false)} className="flex-1 rounded-2xl border border-neutral-200 py-4 font-bold text-neutral-600">Cancel</button>
+                  <button disabled={isProcessing} onClick={() => setIsCheckoutOpen(false)} className="flex-1 rounded-2xl border border-neutral-200 py-4 font-bold text-neutral-600 hover:bg-neutral-50">Cancel</button>
                   <button disabled={!paymentMethod || isProcessing} onClick={handleCheckout} className="flex-[2] rounded-2xl bg-emerald-800 py-4 text-lg font-black text-white hover:bg-neutral-900 transition-all">{isProcessing ? "Processing..." : "Confirm Order"}</button>
                 </div>
               </div>
@@ -762,10 +924,10 @@ function App() {
             <ShoppingBasket className="h-10 w-10 text-amber-400" />
           </div>
           <h1 className="text-3xl font-black tracking-tight text-neutral-900">Admin Portal</h1>
-          <p className="text-neutral-500 font-medium">Please sign in to continue</p>
+          <p className="text-neutral-500 font-medium text-center mt-2">Log in to manage inventory, update prices, and view customer orders.</p>
         </div>
 
-        <Card className="border-none shadow-2xl overflow-hidden">
+        <Card className="border-none shadow-2xl overflow-hidden rounded-3xl">
           <CardHeader className="bg-neutral-900 text-white pb-8">
             <CardTitle className="text-xl flex items-center gap-2">
               <Lock className="h-5 w-5 text-amber-400" />
@@ -776,39 +938,39 @@ function App() {
           <CardContent className="pt-8">
             <form onSubmit={handleAdminLogin} className="space-y-6">
               <div className="space-y-2">
-                <Label htmlFor="username">Username</Label>
+                <Label htmlFor="username" className="font-bold">Username</Label>
                 <div className="relative">
                   <User className="absolute left-3 top-3 h-4 w-4 text-neutral-400" />
                   <Input 
                     id="username" 
                     placeholder="Enter username" 
-                    className="pl-10"
+                    className="pl-10 h-11"
                     value={loginUsername}
                     onChange={(e) => setLoginUsername(e.target.value)}
                   />
                 </div>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="password">Password</Label>
+                <Label htmlFor="password" className="font-bold">Password</Label>
                 <div className="relative">
                   <Lock className="absolute left-3 top-3 h-4 w-4 text-neutral-400" />
                   <Input 
                     id="password" 
                     type="password" 
                     placeholder="Enter password" 
-                    className="pl-10"
+                    className="pl-10 h-11"
                     value={loginPassword}
                     onChange={(e) => setLoginPassword(e.target.value)}
                   />
                 </div>
               </div>
-              <Button type="submit" className="w-full bg-emerald-800 hover:bg-emerald-900 text-white h-12 text-lg font-bold">
+              <Button type="submit" className="w-full bg-emerald-800 hover:bg-emerald-900 text-white h-12 text-lg font-bold rounded-xl">
                 Access Dashboard
               </Button>
             </form>
             <button 
               onClick={() => setView('store')}
-              className="w-full mt-4 text-sm font-semibold text-neutral-500 hover:text-emerald-800 transition-colors"
+              className="w-full mt-6 text-sm font-semibold text-neutral-500 hover:text-emerald-800 transition-colors"
             >
               ← Back to Amara Farms Store
             </button>
@@ -822,36 +984,42 @@ function App() {
   const renderAdminDashboard = () => (
     <div className="min-h-screen bg-neutral-100 flex">
       {/* Sidebar - Desktop */}
-      <aside className="hidden lg:flex w-64 flex-col bg-neutral-900 text-white shrink-0">
-        <div className="p-6 flex items-center gap-3 border-b border-neutral-800">
+      <aside className="hidden lg:flex w-72 flex-col bg-neutral-900 text-white shrink-0">
+        <div className="p-8 flex items-center gap-3 border-b border-neutral-800">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-800">
             <ShoppingBasket className="h-6 w-6 text-amber-400" />
           </div>
-          <span className="text-lg font-black tracking-tighter">ADMIN PANEL</span>
+          <span className="text-xl font-black tracking-tighter">ADMIN PANEL</span>
         </div>
-        <nav className="flex-1 p-4 space-y-2">
-          <div className="flex items-center gap-3 p-3 rounded-lg bg-emerald-800/20 text-emerald-400 font-bold">
+        <nav className="flex-1 p-6 space-y-2">
+          <div className="flex items-center gap-3 p-4 rounded-xl bg-emerald-800/20 text-emerald-400 font-bold mb-6 border border-emerald-800/30">
             <LayoutDashboard className="h-5 w-5" />
             Dashboard Overview
           </div>
-          <div className="p-3 text-neutral-500 text-xs font-bold uppercase tracking-widest mt-6">Management</div>
-          <div className="flex items-center gap-3 p-3 rounded-lg text-neutral-400 hover:bg-neutral-800 hover:text-white transition-colors cursor-pointer">
+          <div className="p-2 text-neutral-500 text-[10px] font-bold uppercase tracking-widest mt-6 mb-2">Management</div>
+          <button 
+            onClick={() => setAdminActiveTab('inventory')}
+            className={`w-full justify-start flex items-center gap-4 p-4 rounded-xl transition-all cursor-pointer ${adminActiveTab === 'inventory' ? 'bg-emerald-800 text-white shadow-lg' : 'text-neutral-400 hover:bg-neutral-800 hover:text-white'}`}
+          >
             <Layers className="h-5 w-5" />
-            Stock Inventory
-          </div>
-          <div className="flex items-center gap-3 p-3 rounded-lg text-neutral-400 hover:bg-neutral-800 hover:text-white transition-colors cursor-pointer">
+            <span className="font-bold">Stock Inventory</span>
+          </button>
+          <button 
+            onClick={() => setAdminActiveTab('orders')}
+            className={`w-full justify-start flex items-center gap-4 p-4 rounded-xl transition-all cursor-pointer ${adminActiveTab === 'orders' ? 'bg-emerald-800 text-white shadow-lg' : 'text-neutral-400 hover:bg-neutral-800 hover:text-white'}`}
+          >
             <ShoppingBag className="h-5 w-5" />
-            Order History
-          </div>
+            <span className="font-bold">Customer Orders</span>
+          </button>
         </nav>
-        <div className="p-4 border-t border-neutral-800">
+        <div className="p-6 border-t border-neutral-800">
           <Button 
             variant="ghost" 
-            className="w-full justify-start text-red-400 hover:text-red-300 hover:bg-red-400/10 gap-3"
+            className="w-full justify-start text-red-400 hover:text-red-300 hover:bg-red-400/10 gap-4 h-12 rounded-xl"
             onClick={() => setView('store')}
           >
             <LogOut className="h-5 w-5" />
-            Log Out
+            <span className="font-bold">Log Out</span>
           </Button>
         </div>
       </aside>
@@ -859,208 +1027,329 @@ function App() {
       {/* Main Content */}
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* Header */}
-        <header className="h-16 bg-white border-b border-neutral-200 px-6 flex items-center justify-between">
+        <header className="h-20 bg-white border-b border-neutral-200 px-8 flex items-center justify-between">
           <div className="flex items-center gap-4 lg:hidden">
             <ShoppingBasket className="h-8 w-8 text-emerald-800" />
-            <h1 className="font-bold">Admin Panel</h1>
+            <h1 className="font-black text-lg uppercase">Admin</h1>
           </div>
           <div className="hidden lg:block">
-            <h2 className="text-lg font-bold text-neutral-900">Welcome back, shifter77</h2>
+            <h2 className="text-xl font-black text-neutral-900">Welcome, shifter77</h2>
+            <p className="text-xs text-neutral-500 font-medium uppercase tracking-widest">Administrator Dashboard</p>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-6">
             <div className="relative hidden sm:block">
-              <Search className="absolute left-3 top-2.5 h-4 w-4 text-neutral-400" />
-              <Input placeholder="Search orders..." className="pl-10 h-9 w-64 bg-neutral-50" />
+              <Search className="absolute left-4 top-3 h-4 w-4 text-neutral-400" />
+              <Input placeholder="Search inventory or orders..." className="pl-12 h-10 w-72 bg-neutral-50 rounded-xl border-none ring-1 ring-neutral-200 focus:ring-2 focus:ring-emerald-800" />
             </div>
-            <div className="h-10 w-10 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-800 font-bold border-2 border-emerald-200">
-              S7
+            <div className="h-12 w-12 rounded-2xl bg-emerald-800 flex items-center justify-center text-amber-400 font-black border-2 border-emerald-900 shadow-md">
+              S
             </div>
-            <button className="lg:hidden" onClick={() => setView('store')}>
-              <LogOut className="h-6 w-6 text-neutral-500" />
-            </button>
           </div>
         </header>
 
         {/* Dashboard Content */}
-        <div className="flex-1 overflow-y-auto p-6">
-          <Tabs defaultValue="inventory" className="space-y-6">
-            <TabsList className="bg-white border border-neutral-200 p-1 rounded-xl w-full sm:w-auto h-12">
-              <TabsTrigger value="inventory" className="rounded-lg h-10 px-6 data-[state=active]:bg-emerald-800 data-[state=active]:text-white">
-                <Layers className="h-4 w-4 mr-2" />
+        <div className="flex-1 overflow-y-auto p-8">
+          <div className="flex flex-col gap-8">
+            {/* Mobile Tab Switcher */}
+            <div className="flex lg:hidden bg-white border border-neutral-200 p-1.5 rounded-2xl w-full h-14 shadow-sm">
+              <button 
+                onClick={() => setAdminActiveTab('inventory')}
+                className={`flex-1 rounded-xl flex items-center justify-center gap-2 font-bold text-sm transition-all ${adminActiveTab === 'inventory' ? 'bg-emerald-800 text-white shadow-lg' : 'text-neutral-500'}`}
+              >
+                <Layers className="h-4 w-4" />
                 Inventory
-              </TabsTrigger>
-              <TabsTrigger value="orders" className="rounded-lg h-10 px-6 data-[state=active]:bg-emerald-800 data-[state=active]:text-white">
-                <ShoppingBag className="h-4 w-4 mr-2" />
-                Orders List
-              </TabsTrigger>
-            </TabsList>
+              </button>
+              <button 
+                onClick={() => setAdminActiveTab('orders')}
+                className={`flex-1 rounded-xl flex items-center justify-center gap-2 font-bold text-sm transition-all ${adminActiveTab === 'orders' ? 'bg-emerald-800 text-white shadow-lg' : 'text-neutral-500'}`}
+              >
+                <ShoppingBag className="h-4 w-4" />
+                Orders
+              </button>
+            </div>
 
-            <TabsContent value="inventory" className="space-y-6">
-              <div className="grid gap-4 md:grid-cols-3">
-                <Card>
-                  <CardContent className="pt-6">
-                    <div className="flex items-center justify-between">
-                      <div><p className="text-sm font-medium text-neutral-500">Total Products</p><h3 className="text-2xl font-black">{products.length}</h3></div>
-                      <div className="h-12 w-12 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center"><Layers className="h-6 w-6" /></div>
-                    </div>
-                  </CardContent>
-                </Card>
-                <Card>
-                  <CardContent className="pt-6">
-                    <div className="flex items-center justify-between">
-                      <div><p className="text-sm font-medium text-neutral-500">In Stock</p><h3 className="text-2xl font-black text-emerald-600">{products.filter(p => p.inStock).length}</h3></div>
-                      <div className="h-12 w-12 bg-emerald-50 text-emerald-600 rounded-xl flex items-center justify-center"><CheckCircle2 className="h-6 w-6" /></div>
-                    </div>
-                  </CardContent>
-                </Card>
-                <Card>
-                  <CardContent className="pt-6">
-                    <div className="flex items-center justify-between">
-                      <div><p className="text-sm font-medium text-neutral-500">Out of Stock</p><h3 className="text-2xl font-black text-red-600">{products.filter(p => !p.inStock).length}</h3></div>
-                      <div className="h-12 w-12 bg-red-50 text-red-600 rounded-xl flex items-center justify-center"><AlertCircle className="h-6 w-6" /></div>
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
-
-              <Card className="border-neutral-200 shadow-sm overflow-hidden">
-                <Table>
-                  <TableHeader className="bg-neutral-50">
-                    <TableRow>
-                      <TableHead className="w-[100px]">Image</TableHead>
-                      <TableHead>Product Name</TableHead>
-                      <TableHead>Category</TableHead>
-                      <TableHead>Price (KSH)</TableHead>
-                      <TableHead>Availability</TableHead>
-                      <TableHead className="text-right">Action</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {products.map((product) => (
-                      <TableRow key={product.id}>
-                        <TableCell>
-                          <img src={product.image} alt={product.name} className="h-10 w-10 rounded-md object-cover border border-neutral-200" />
-                        </TableCell>
-                        <TableCell className="font-bold text-neutral-900">{product.name}</TableCell>
-                        <TableCell>
-                          <Badge variant="outline" className="capitalize">{product.category}</Badge>
-                        </TableCell>
-                        <TableCell>{product.price.toLocaleString()}</TableCell>
-                        <TableCell>
-                          <Badge className={product.inStock ? "bg-emerald-100 text-emerald-800 border-emerald-200" : "bg-red-100 text-red-800 border-red-200"}>
-                            {product.inStock ? "In Stock" : "Out of Stock"}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <div className="flex items-center justify-end gap-3">
-                            <span className="text-xs font-semibold text-neutral-500">{product.inStock ? 'Disable' : 'Enable'}</span>
-                            <Switch 
-                              checked={product.inStock} 
-                              onCheckedChange={() => toggleStock(product.id)}
-                              className="data-[state=checked]:bg-emerald-800"
-                            />
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </Card>
-            </TabsContent>
-
-            <TabsContent value="orders" className="space-y-6">
-              <div className="grid gap-4 md:grid-cols-3">
-                <Card>
-                  <CardContent className="pt-6">
-                    <div className="flex items-center justify-between">
-                      <div><p className="text-sm font-medium text-neutral-500">Pending Orders</p><h3 className="text-2xl font-black text-amber-600">{orders.filter(o => o.status === 'pending').length}</h3></div>
-                      <div className="h-12 w-12 bg-amber-50 text-amber-600 rounded-xl flex items-center justify-center"><Clock className="h-6 w-6" /></div>
-                    </div>
-                  </CardContent>
-                </Card>
-                <Card>
-                  <CardContent className="pt-6">
-                    <div className="flex items-center justify-between">
-                      <div><p className="text-sm font-medium text-neutral-500">Monthly Revenue</p><h3 className="text-2xl font-black text-neutral-900">KSH {orders.reduce((acc, o) => acc + o.total, 0).toLocaleString()}</h3></div>
-                      <div className="h-12 w-12 bg-neutral-900 text-amber-400 rounded-xl flex items-center justify-center"><Banknote className="h-6 w-6" /></div>
-                    </div>
-                  </CardContent>
-                </Card>
-                <Card>
-                  <CardContent className="pt-6">
-                    <div className="flex items-center justify-between">
-                      <div><p className="text-sm font-medium text-neutral-500">Completed Delivery</p><h3 className="text-2xl font-black text-emerald-600">{orders.filter(o => o.status === 'delivered').length}</h3></div>
-                      <div className="h-12 w-12 bg-emerald-50 text-emerald-600 rounded-xl flex items-center justify-center"><CheckCircle2 className="h-6 w-6" /></div>
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
-
-              <div className="space-y-4">
-                {orders.map((order) => (
-                  <Card key={order.id} className="border-neutral-200 overflow-hidden">
-                    <div className="flex flex-col md:flex-row">
-                      <div className="bg-neutral-50 p-6 flex flex-col justify-center border-b md:border-b-0 md:border-r border-neutral-200 md:w-64 shrink-0">
-                        <div className="flex items-center justify-between mb-4">
-                          <Badge className={
-                            order.status === 'pending' ? 'bg-amber-100 text-amber-800' : 
-                            order.status === 'completed' ? 'bg-blue-100 text-blue-800' : 
-                            'bg-emerald-100 text-emerald-800'
-                          }>
-                            {order.status.toUpperCase()}
-                          </Badge>
-                          <span className="text-xs font-bold text-neutral-400">{order.id}</span>
-                        </div>
-                        <h4 className="font-black text-neutral-900 text-lg">{order.customerName}</h4>
-                        <div className="mt-2 flex items-center gap-2 text-sm text-neutral-600">
-                          <Phone className="h-3 w-3" />
-                          {order.customerPhone}
-                        </div>
-                        <div className="mt-1 flex items-center gap-2 text-sm text-neutral-600">
-                          <MapPin className="h-3 w-3" />
-                          {order.location}
-                        </div>
+            {adminActiveTab === 'inventory' && (
+              <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4">
+                <div className="grid gap-6 md:grid-cols-3">
+                  <Card className="border-none shadow-sm rounded-3xl overflow-hidden">
+                    <CardContent className="p-8">
+                      <div className="flex items-center justify-between">
+                        <div><p className="text-xs font-bold text-neutral-500 uppercase tracking-widest mb-1">Products</p><h3 className="text-3xl font-black">{products.length}</h3></div>
+                        <div className="h-14 w-14 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center shadow-inner"><Layers className="h-7 w-7" /></div>
                       </div>
-                      <div className="flex-1 p-6">
-                        <div className="flex justify-between items-start mb-4">
-                          <span className="text-xs font-bold text-neutral-400 uppercase tracking-widest">Ordered Items</span>
-                          <span className="text-xs font-medium text-neutral-400">{new Date(order.createdAt).toLocaleDateString('en-KE', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
-                        </div>
-                        <div className="space-y-2 mb-6">
-                          {order.items.map((item, idx) => (
-                            <div key={idx} className="flex justify-between items-center bg-neutral-50/50 p-2 rounded-lg">
-                              <span className="font-medium text-neutral-800">{item.name} <span className="text-neutral-400">×{item.quantity}</span></span>
-                              <span className="font-bold">KSH {(item.price * item.quantity).toLocaleString()}</span>
-                            </div>
-                          ))}
-                        </div>
-                        <div className="flex flex-col sm:flex-row items-center justify-between gap-4 border-t border-neutral-100 pt-4">
-                          <div className="text-xl font-black text-emerald-800">
-                            Total: KSH {order.total.toLocaleString()}
-                          </div>
-                          <div className="flex gap-2">
-                            {order.status === 'pending' && (
-                              <Button size="sm" onClick={() => updateOrderStatus(order.id, 'completed')} className="bg-blue-600 hover:bg-blue-700">
-                                <Check className="mr-2 h-4 w-4" /> Complete Payment
-                              </Button>
-                            )}
-                            {order.status === 'completed' && (
-                              <Button size="sm" onClick={() => updateOrderStatus(order.id, 'delivered')} className="bg-emerald-800 hover:bg-emerald-900">
-                                <MapPin className="mr-2 h-4 w-4" /> Mark Delivered
-                              </Button>
-                            )}
-                            <Button size="sm" variant="outline" className="text-neutral-500">
-                              View Details
-                            </Button>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
+                    </CardContent>
                   </Card>
-                ))}
+                  <Card className="border-none shadow-sm rounded-3xl overflow-hidden">
+                    <CardContent className="p-8">
+                      <div className="flex items-center justify-between">
+                        <div><p className="text-xs font-bold text-neutral-500 uppercase tracking-widest mb-1">In Stock</p><h3 className="text-3xl font-black text-emerald-600">{products.filter(p => p.inStock).length}</h3></div>
+                        <div className="h-14 w-14 bg-emerald-50 text-emerald-600 rounded-2xl flex items-center justify-center shadow-inner"><CheckCircle2 className="h-7 w-7" /></div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                  <Card className="border-none shadow-sm rounded-3xl overflow-hidden">
+                    <CardContent className="p-8">
+                      <div className="flex items-center justify-between">
+                        <div><p className="text-xs font-bold text-neutral-500 uppercase tracking-widest mb-1">Out of Stock</p><h3 className="text-3xl font-black text-red-600">{products.filter(p => !p.inStock).length}</h3></div>
+                        <div className="h-14 w-14 bg-red-50 text-red-600 rounded-2xl flex items-center justify-center shadow-inner"><AlertCircle className="h-7 w-7" /></div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+
+                <Card className="border-none shadow-xl rounded-3xl overflow-hidden">
+                  <div className="bg-neutral-900 p-6 flex justify-between items-center">
+                    <h3 className="text-white font-black text-lg uppercase tracking-tight">Inventory Management</h3>
+                    <Badge className="bg-emerald-800 text-amber-400 font-black px-4 py-1.5 rounded-full">{products.length} ITEMS</Badge>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader className="bg-neutral-50">
+                        <TableRow className="border-b border-neutral-100 h-14">
+                          <TableHead className="w-[100px] pl-6 font-bold uppercase text-[10px] text-neutral-400">Image</TableHead>
+                          <TableHead className="font-bold uppercase text-[10px] text-neutral-400">Product Name</TableHead>
+                          <TableHead className="font-bold uppercase text-[10px] text-neutral-400">Category</TableHead>
+                          <TableHead className="w-[180px] font-bold uppercase text-[10px] text-neutral-400">Price (KSH)</TableHead>
+                          <TableHead className="font-bold uppercase text-[10px] text-neutral-400">Stock Status</TableHead>
+                          <TableHead className="text-right pr-6 font-bold uppercase text-[10px] text-neutral-400">Manage Stock</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {products.map((product) => (
+                          <TableRow key={product.id} className="hover:bg-neutral-50/50 border-b border-neutral-50 h-20 transition-colors">
+                            <TableCell className="pl-6">
+                              <img src={product.image} alt={product.name} className="h-12 w-12 rounded-xl object-cover border border-neutral-200 shadow-sm" />
+                            </TableCell>
+                            <TableCell className="font-black text-neutral-900">{product.name}</TableCell>
+                            <TableCell>
+                              <Badge variant="outline" className="capitalize font-bold border-neutral-200 bg-white">{product.category}</Badge>
+                            </TableCell>
+                            <TableCell>
+                              {editingPriceId === product.id ? (
+                                <div className="flex items-center gap-2 bg-emerald-50 p-1.5 rounded-xl border border-emerald-100">
+                                  <Input 
+                                    type="number" 
+                                    className="h-9 w-24 bg-white font-black text-emerald-800 border-none shadow-sm"
+                                    value={newPrice} 
+                                    onChange={(e) => setNewPrice(e.target.value)}
+                                    autoFocus
+                                  />
+                                  <Button size="icon" className="h-9 w-9 bg-emerald-800 text-white rounded-lg" onClick={() => handlePriceUpdate(product.id)}>
+                                    <Check className="h-5 w-5" />
+                                  </Button>
+                                  <Button size="icon" variant="ghost" className="h-9 w-9 text-neutral-400" onClick={() => {setEditingPriceId(null); setNewPrice("");}}>
+                                    <X className="h-5 w-5" />
+                                  </Button>
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-3 group">
+                                  <span className="font-black text-lg text-emerald-800">{product.price.toLocaleString()}</span>
+                                  <button 
+                                    onClick={() => {
+                                      setEditingPriceId(product.id);
+                                      setNewPrice(product.price.toString());
+                                    }}
+                                    className="flex h-8 w-8 items-center justify-center rounded-lg bg-neutral-100 text-neutral-500 hover:bg-emerald-800 hover:text-white transition-all"
+                                    title="Change Price"
+                                  >
+                                    <Edit3 className="h-4 w-4" />
+                                  </button>
+                                </div>
+                              )}
+                            </TableCell>
+                            <TableCell>
+                              <Badge className={product.inStock ? "bg-emerald-100 text-emerald-800 border-none font-bold px-3 py-1" : "bg-red-100 text-red-800 border-none font-bold px-3 py-1"}>
+                                {product.inStock ? "AVAILABLE" : "OUT OF STOCK"}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-right pr-6">
+                              <div className="flex items-center justify-end gap-4">
+                                <span className={`text-[10px] font-black uppercase tracking-wider ${product.inStock ? 'text-emerald-600' : 'text-neutral-300'}`}>{product.inStock ? 'Enabled' : 'Disabled'}</span>
+                                <Switch 
+                                  checked={product.inStock} 
+                                  onCheckedChange={() => toggleStock(product.id)}
+                                  className="data-[state=checked]:bg-emerald-800"
+                                />
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </Card>
               </div>
-            </TabsContent>
-          </Tabs>
+            )}
+
+            {adminActiveTab === 'orders' && (
+              <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4">
+                <div className="grid gap-6 md:grid-cols-3">
+                  <Card className="border-none shadow-sm rounded-3xl overflow-hidden">
+                    <CardContent className="p-8">
+                      <div className="flex items-center justify-between">
+                        <div><p className="text-xs font-bold text-neutral-500 uppercase tracking-widest mb-1">Pending Tasks</p><h3 className="text-3xl font-black text-amber-600">{orders.filter(o => o.status === 'pending').length}</h3></div>
+                        <div className="h-14 w-14 bg-amber-50 text-amber-600 rounded-2xl flex items-center justify-center shadow-inner"><Clock className="h-7 w-7" /></div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                  <Card className="border-none shadow-sm rounded-3xl overflow-hidden">
+                    <CardContent className="p-8">
+                      <div className="flex items-center justify-between">
+                        <div><p className="text-xs font-bold text-neutral-500 uppercase tracking-widest mb-1">Total Revenue</p><h3 className="text-3xl font-black text-neutral-900">KSH {orders.reduce((acc, o) => acc + o.total, 0).toLocaleString()}</h3></div>
+                        <div className="h-14 w-14 bg-emerald-50 text-emerald-800 rounded-2xl flex items-center justify-center shadow-inner"><Banknote className="h-7 w-7" /></div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                  <Card className="border-none shadow-sm rounded-3xl overflow-hidden">
+                    <CardContent className="p-8">
+                      <div className="flex items-center justify-between">
+                        <div><p className="text-xs font-bold text-neutral-500 uppercase tracking-widest mb-1">Deliveries</p><h3 className="text-3xl font-black text-blue-600">{orders.filter(o => o.status === 'delivered').length}</h3></div>
+                        <div className="h-14 w-14 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center shadow-inner"><ShoppingBag className="h-7 w-7" /></div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+
+                <div className="space-y-6">
+                  {orders.map((order) => (
+                    <Card key={order.id} className="border-none shadow-xl rounded-3xl overflow-hidden group">
+                      <div className="flex flex-col md:flex-row">
+                        <div className="bg-neutral-50 p-8 flex flex-col justify-center border-b md:border-b-0 md:border-r border-neutral-100 md:w-80 shrink-0">
+                          <div className="flex items-center justify-between mb-6">
+                            <Badge className={`font-black px-4 py-1.5 rounded-full border-none shadow-sm ${
+                              order.status === 'pending' ? 'bg-amber-100 text-amber-800' : 
+                              order.status === 'completed' ? 'bg-blue-100 text-blue-800' : 
+                              'bg-emerald-100 text-emerald-800'
+                            }`}>
+                              {order.status.toUpperCase()}
+                            </Badge>
+                            <span className="text-[10px] font-black text-neutral-300 tracking-widest">{order.id}</span>
+                          </div>
+                          
+                          <div className="space-y-6">
+                            <div className="flex items-center gap-4">
+                              <div className="h-12 w-12 rounded-2xl bg-white border border-neutral-200 flex items-center justify-center text-emerald-800 shadow-sm">
+                                <User className="h-6 w-6" />
+                              </div>
+                              <div>
+                                <h4 className="font-black text-neutral-900 text-lg leading-tight">{order.customerName}</h4>
+                                <p className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest">Customer Name</p>
+                              </div>
+                            </div>
+
+                            <div className="space-y-4 pt-4 border-t border-neutral-200">
+                              <div className="flex items-center gap-4 group/item cursor-pointer" onClick={() => window.location.href = `tel:${order.customerPhone}`}>
+                                <div className="h-10 w-10 rounded-xl bg-emerald-50 flex items-center justify-center text-emerald-800 group-hover/item:bg-emerald-800 group-hover/item:text-white transition-all">
+                                  <Phone className="h-5 w-5" />
+                                </div>
+                                <div>
+                                  <span className="block font-black text-neutral-900">{order.customerPhone}</span>
+                                  <p className="text-[9px] font-bold text-neutral-400 uppercase tracking-widest">Phone Number</p>
+                                </div>
+                              </div>
+
+                              <div className="flex items-start gap-4">
+                                <div className="h-10 w-10 rounded-xl bg-emerald-50 flex items-center justify-center text-emerald-800 mt-0.5">
+                                  <MapPin className="h-5 w-5" />
+                                </div>
+                                <div>
+                                  <span className="block font-bold text-neutral-800 leading-snug">{order.location}</span>
+                                  <p className="text-[9px] font-bold text-neutral-400 uppercase tracking-widest">Delivery Address</p>
+                                </div>
+                              </div>
+                            </div>
+
+                            {order.customerPreference && (
+                              <div className="mt-2 p-4 bg-white rounded-2xl border border-neutral-100 shadow-sm">
+                                <div className="flex items-center gap-2 text-[9px] font-black text-emerald-800 uppercase tracking-widest mb-2">
+                                  <MessageSquare className="h-3 w-3" /> Order Preference
+                                </div>
+                                <p className="text-xs text-neutral-600 italic leading-relaxed font-medium text-center">"{order.customerPreference}"</p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex-1 p-8 bg-white">
+                          <div className="flex flex-col sm:flex-row justify-between items-start gap-4 mb-8">
+                            <div className="flex items-center gap-3">
+                              <div className="h-10 w-10 rounded-xl bg-neutral-900 flex items-center justify-center text-amber-400">
+                                <Layers className="h-5 w-5" />
+                              </div>
+                              <h5 className="font-black text-neutral-900 uppercase tracking-tight">Ordered Items</h5>
+                            </div>
+                            <div className="flex items-center gap-2 text-[10px] font-black text-neutral-400 uppercase tracking-widest bg-neutral-50 px-3 py-1.5 rounded-full">
+                              <Calendar className="h-3 w-3" />
+                              {new Date(order.createdAt).toLocaleDateString('en-KE', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                            </div>
+                          </div>
+
+                          <div className="space-y-3 mb-10">
+                            {order.items.map((item, idx) => (
+                              <div key={idx} className="flex justify-between items-center bg-neutral-50/50 p-4 rounded-2xl border border-neutral-100/50 hover:bg-neutral-50 transition-colors">
+                                <div className="flex items-center gap-4">
+                                  <div className="h-8 w-8 rounded-lg bg-white border border-neutral-200 flex items-center justify-center text-emerald-800 font-black text-xs">
+                                    {item.quantity}x
+                                  </div>
+                                  <span className="font-bold text-neutral-800">{item.name}</span>
+                                </div>
+                                <div className="flex items-center gap-4">
+                                  <span className="text-xs text-neutral-400 font-bold">{item.price.toLocaleString()} ea</span>
+                                  <span className="font-black text-neutral-900 text-lg">KSH {(item.price * item.quantity).toLocaleString()}</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+
+                          <div className="flex flex-col sm:flex-row items-center justify-between gap-6 pt-8 border-t border-neutral-100">
+                            <div className="text-3xl font-black text-emerald-800 flex items-center gap-3">
+                              <span className="text-xs font-bold text-neutral-400 uppercase tracking-widest">Order Total</span>
+                              KSH {order.total.toLocaleString()}
+                            </div>
+                            <div className="flex gap-3 w-full sm:w-auto">
+                              {order.status === 'pending' && (
+                                <Button 
+                                  size="lg" 
+                                  onClick={() => updateOrderStatus(order.id, 'completed')} 
+                                  className="flex-1 sm:flex-none bg-blue-600 hover:bg-blue-700 text-white font-black rounded-xl h-14 px-8 shadow-lg shadow-blue-100"
+                                >
+                                  <PaymentIcon className="mr-2 h-5 w-5" /> MARK AS PAID
+                                </Button>
+                              )}
+                              {order.status === 'completed' && (
+                                <Button 
+                                  size="lg" 
+                                  onClick={() => updateOrderStatus(order.id, 'delivered')} 
+                                  className="flex-1 sm:flex-none bg-emerald-800 hover:bg-emerald-900 text-white font-black rounded-xl h-14 px-8 shadow-lg shadow-emerald-100"
+                                >
+                                  <CheckCircle2 className="mr-2 h-5 w-5" /> MARK DELIVERED
+                                </Button>
+                              )}
+                              <Button 
+                                size="lg" 
+                                variant="outline" 
+                                className="flex-1 sm:flex-none h-14 px-8 rounded-xl font-black text-neutral-500 hover:bg-neutral-50 border-neutral-200"
+                                onClick={() => toast.info("Printing Receipt...", { description: "Wait while we generate the PDF." })}
+                              >
+                                PRINT
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </Card>
+                  ))}
+                  
+                  {orders.length === 0 && (
+                    <div className="flex flex-col items-center justify-center py-24 text-neutral-400 border-2 border-dashed border-neutral-200 rounded-3xl">
+                      <ShoppingBag className="h-16 w-16 mb-4 opacity-20" />
+                      <p className="font-bold">No customer orders found yet.</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </main>
     </div>
@@ -1070,6 +1359,15 @@ function App() {
     <div className="min-h-screen font-sans selection:bg-emerald-100 selection:text-emerald-900">
       <Toaster position="top-right" richColors closeButton />
       
+      {isLoading && (
+        <div className="fixed inset-0 z-[100] bg-white/80 backdrop-blur-sm flex items-center justify-center">
+          <div className="flex flex-col items-center gap-4">
+            <div className="h-12 w-12 border-4 border-emerald-800 border-t-transparent rounded-full animate-spin"></div>
+            <p className="font-black text-emerald-800 uppercase tracking-widest text-xs">Loading Amara Data...</p>
+          </div>
+        </div>
+      )}
+
       {view === 'store' && renderStore()}
       {view === 'admin-login' && renderAdminLogin()}
       {view === 'admin-dashboard' && renderAdminDashboard()}

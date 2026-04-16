@@ -1,52 +1,35 @@
-# Implementation Plan - Admin Interface for Amara Farms
+# Implementation Plan - Amara Farms Admin & Customer Enhancements
 
-Add a backend administrator interface for product management and order viewing.
+## 1. Data Model & Supabase Integration
+- Since `IS_SUPABASE_REQUIRED: true`, I will implement a Supabase client in `src/lib/supabase.ts`.
+- Update the `Order` interface to ensure it captures: `customerName`, `customerPhone`, `location`, and `customerPreference`.
+- The `Product` interface will continue to support `price` and `inStock`.
+- Logic will be implemented to sync these with Supabase tables (`products`, `orders`).
 
-## 1. State Management & Data
-- Update `Product` interface to include `inStock: boolean`.
-- Create an `Order` interface:
-  ```typescript
-  interface Order {
-    id: string;
-    customerName: string;
-    customerPhone: string;
-    location: string;
-    items: { name: string; quantity: number; price: number }[];
-    total: number;
-    status: 'pending' | 'completed';
-    createdAt: string;
-  }
-  ```
-- Initialize `products` state in `App.tsx` with `inStock` property.
-- Create a `mockOrders` initial state.
-- Add `view` state to track 'store', 'admin-login', or 'admin-dashboard'.
+## 2. Customer UI Enhancements
+- **Checkout Modal**:
+  - Group customer information fields (Name, Phone, Location, Preference).
+  - Add icons and clear labels for each field.
+  - Ensure validation for all required fields.
+  - Add a "Preference" textarea for special instructions.
 
-## 2. Components to Create/Modify
-### Modify `App.tsx`
-- **Main Layout Wrapper**: Add conditional rendering based on `currentView` ('store' | 'admin-login' | 'admin-dashboard').
-- **Product Display**: Show "Out of Stock" for products where `inStock` is false. Disable "Add to Cart" for these.
-- **Footer**: Update "Made by Teckocraft Industries" to be a button that sets `currentView` to 'admin-login'.
-
-### New Section: `AdminLogin`
-- Form with username and password fields.
-- Validation for `shifter77` and `amara&hope`.
-- Success: transition to 'admin-dashboard'.
-- Error: show toast notification using `sonner`.
-
-### New Section: `AdminDashboard`
-- **Navigation Header**: Admin title and Logout button.
-- **Tabs**: "Inventory" and "Orders".
+## 3. Administrator Portal Enhancements
+- **Authentication**: Keep existing credentials (`shifter77` / `amara&hope`).
 - **Inventory Management**:
-  - Table of all products.
-  - Switch/Toggle for "In Stock" vs "Out of Stock".
+  - Enhance the table to allow inline price editing.
+  - Use a clear "Save" and "Cancel" mechanism for price updates.
+  - Maintain the stock toggle.
 - **Order Management**:
-  - List of orders with details: customer, items, quantity, total, location, and date.
-- **Back to Store**: Simple way to return.
+  - Create a detailed "Order Details" view or expanded card for each order.
+  - Ensure the customer's phone number, location, and preference are prominently displayed.
+  - Add status management (Pending -> Paid -> Delivered).
 
-## 3. Styling
-- Colors: Green (`#064e3b`), White, Black, Gold (`#fbbf24`).
-- Maintain existing responsive design patterns.
+## 4. Visual Design (Theme Preservation)
+- Primary Color: Emerald Green (`#064e3b` / `text-emerald-800`).
+- Accent Color: Gold (`#fbbf24` / `text-amber-400`).
+- Clean, modern layout using Tailwind CSS and `framer-motion` for smooth transitions.
 
-## 4. Interaction
-- Ensure `addToCart` only works for available items.
-- Footer admin link at the very bottom.
+## 5. Implementation Steps
+- Create `src/lib/supabase.ts`.
+- Update `src/App.tsx` with enhanced logic and UI components.
+- Validate the build and ensure responsiveness.
